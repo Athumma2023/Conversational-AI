@@ -1,0 +1,256 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Sentiment Analysis App</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.6.0/jquery.min.js"></script>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            line-height: 1.6;
+            margin: 0;
+            padding: 20px;
+            background-color: #f4f4f4;
+        }
+        .container {
+            max-width: 800px;
+            margin: auto;
+            background: white;
+            padding: 20px;
+            border-radius: 5px;
+            box-shadow: 0 0 10px rgba(0,0,0,0.1);
+        }
+        h1, h2 {
+            color: #333;
+        }
+        textarea {
+            width: 100%;
+            padding: 10px;
+            margin-bottom: 10px;
+        }
+        button {
+            padding: 10px 15px;
+            background: #333;
+            color: #fff;
+            border: none;
+            cursor: pointer;
+            margin-right: 10px;
+            margin-bottom: 10px;
+        }
+        button:hover {
+            background: #444;
+        }
+        button:disabled {
+            background: #ccc;
+            cursor: not-allowed;
+        }
+        #result, #speech-result, #recording-status, #saved-result {
+            margin-top: 20px;
+            padding: 10px;
+            background: #e7e7e7;
+            border-radius: 5px;
+        }
+        #recording-status {
+            display: none;
+            color: #d9534f;
+        }
+        .error {
+            color: #d9534f;
+            font-weight: bold;
+        }
+        #recorded-audio, #analyze-speech-btn {
+            display: none;
+            margin-top: 10px;
+        }
+        #result-id-input {
+            width: 300px;
+            padding: 5px;
+            margin-right: 10px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Sentiment Analysis App</h1>
+
+        <h2>Text Analysis</h2>
+        <textarea id="text-input" rows="4" placeholder="Enter text to analyze"></textarea>
+        <button onclick="analyzeText()">Analyze Text</button>
+        <button onclick="textToSpeech()">Convert to Speech</button>
+        <div id="result"></div>
+        <audio id="audio-player" controls style="display: none;"></audio>
+
+        <h2>Speech Analysis</h2>
+        <button id="start-recording">Start Recording</button>
+        <button id="stop-recording" disabled>Stop Recording</button>
+        <div id="recording-status">Recording...</div>
+        <audio id="recorded-audio" controls></audio>
+        <button id="analyze-speech-btn" onclick="analyzeSpeech()">Analyze Speech</button>
+        <div id="speech-result"></div>
+
+        <h2>Retrieve Saved Result</h2>
+        <input type="text" id="result-id-input" placeholder="Enter Result ID">
+        <button onclick="retrieveResult()">Retrieve Result</button>
+        <div id="saved-result"></div>
+    </div>
+
+    <script>
+        let mediaRecorder;
+        let audioChunks = [];
+        let audioBlob;
+        let transcript;
+        let audioFilename;
+
+        function analyzeText() {
+            const text = $('#text-input').val();
+            if (!text) {
+                $('#result').html('<span class="error">Please enter some text to analyze.</span>');
+                return;
+            }
+            $.post('/analyze-text', {text: text}, function(data) {
+                if (data.error) {
+                    $('#result').html(`<span class="error">Error: ${data.error}</span>`);
+                } else {
+                    $('#result').html(`Sentiment: ${data.sentiment}<br>Score: ${data.score.toFixed(2)}<br>Magnitude: ${data.magnitude.toFixed(2)}<br>Result ID: ${data.result_id}`);
+                }
+            }).fail(function() {
+                $('#result').html('<span class="error">An error occurred while analyzing the text.</span>');
+            });
+        }
+
+        function textToSpeech() {
+            const text = $('#text-input').val();
+            if (!text) {
+                $('#result').html('<span class="error">Please enter some text to convert to speech.</span>');
+                return;
+            }
+            $.post('/text-to-speech', {text: text}, function(data) {
+                if (data.error) {
+                    $('#result').html(`<span class="error">Error: ${data.error}</span>`);
+                } else {
+                    const audio = document.getElementById('audio-player');
+                    audio.src = 'data:audio/mp3;base64,' + data.audio;
+                    audio.style.display = 'block';
+                    audio.play();
+                }
+            }).fail(function() {
+                $('#result').html('<span class="error">An error occurred while converting text to speech.</span>');
+            });
+        }
+
+        $('#start-recording').click(function() {
+            navigator.mediaDevices.getUserMedia({ audio: true })
+                .then(stream => {
+                    mediaRecorder = new MediaRecorder(stream);
+                    mediaRecorder.start();
+
+                    mediaRecorder.addEventListener("dataavailable", event => {
+                        audioChunks.push(event.data);
+                    });
+
+                    $('#start-recording').prop('disabled', true);
+                    $('#stop-recording').prop('disabled', false);
+                    $('#recording-status').show();
+                    $('#speech-result').html('');
+                    $('#recorded-audio').hide();
+                    $('#analyze-speech-btn').hide();
+                });
+        });
+
+        $('#stop-recording').click(function() {
+            mediaRecorder.stop();
+            $('#start-recording').prop('disabled', false);
+            $('#stop-recording').prop('disabled', true);
+            $('#recording-status').hide();
+
+            mediaRecorder.addEventListener("stop", () => {
+                audioBlob = new Blob(audioChunks, { type: 'audio/webm;codecs=opus' });
+                audioChunks = [];
+
+                const audioUrl = URL.createObjectURL(audioBlob);
+                $('#recorded-audio').attr('src', audioUrl);
+                $('#recorded-audio').show();
+
+                const formData = new FormData();
+                formData.append("file", audioBlob, "speech.webm");
+
+                $('#speech-result').html('Processing...');
+
+                $.ajax({
+                    url: '/speech-to-text',
+                    type: 'POST',
+                    data: formData,
+                    processData: false,
+                    contentType: false,
+                    success: function(data) {
+                        if (data.error) {
+                            $('#speech-result').html(`<span class="error">Error: ${data.error}</span>`);
+                        } else {
+                            transcript = data.transcript;
+                            audioFilename = data.audio_filename;
+                            $('#speech-result').html(`Transcript: ${transcript}`);
+                            $('#analyze-speech-btn').show();
+                        }
+                    },
+                    error: function() {
+                        $('#speech-result').html('<span class="error">An error occurred while processing your speech.</span>');
+                    }
+                });
+            });
+        });
+
+        function analyzeSpeech() {
+            if (!transcript) {
+                $('#speech-result').html('<span class="error">No transcript available for analysis.</span>');
+                return;
+            }
+
+            $.ajax({
+                url: '/analyze-speech',
+                type: 'POST',
+                contentType: 'application/json',
+                data: JSON.stringify({ transcript: transcript, audio_filename: audioFilename }),
+                success: function(data) {
+                    if (data.error) {
+                        $('#speech-result').html(`<span class="error">Error: ${data.error}</span>`);
+                    } else {
+                        $('#speech-result').html(`Transcript: ${transcript}<br>Sentiment: ${data.sentiment}<br>Score: ${data.score.toFixed(2)}<br>Magnitude: ${data.magnitude.toFixed(2)}<br>Result ID: ${data.result_id}`);
+                    }
+                },
+                error: function() {
+                    $('#speech-result').html('<span class="error">An error occurred while analyzing the speech.</span>');
+                }
+            });
+        }
+
+        function retrieveResult() {
+            const resultId = $('#result-id-input').val();
+            if (!resultId) {
+                $('#saved-result').html('<span class="error">Please enter a Result ID.</span>');
+                return;
+            }
+
+            $.get(`/get-result/${resultId}`, function(data) {
+                if (data.error) {
+                    $('#saved-result').html(`<span class="error">Error: ${data.error}</span>`);
+                } else {
+                    let resultHtml = `
+                        <h3>Saved Result</h3>
+                        <p>Text: ${data.text}</p>
+                        <p>Sentiment: ${data.sentiment}</p>
+                        <p>Score: ${data.score.toFixed(2)}</p>
+                        <p>Magnitude: ${data.magnitude.toFixed(2)}
+                    `;
+                    if (data.audio_filename) {
+                        resultHtml += `<p>Audio Filename: ${data.audio_filename}</p>`;
+                    }
+                    $('#saved-result').html(resultHtml);
+                }
+            }).fail(function() {
+                $('#saved-result').html('<span class="error">An error occurred while retrieving the result.</span>');
+            });
+        }
+    </script>
+</body>
+</html>
